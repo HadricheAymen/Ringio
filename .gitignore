@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Real environment files (contain live credentials; only .env.example is committed)
+.env
+.env.local
+.env.*.local
+
+# Local runtime artifacts: real call audio and recording metadata
+recordings/
+agent-test.wav
+
+# Expo / React Native
+.expo/
+android/
+ios/
+dist/
+web-build/
+expo-env.d.ts
+*.tsbuildinfo
+
+# Vercel CLI
+.vercel/
+
+# Local AI-agent tooling (vendored skills, lockfile, and IDE chat history)
+.claude/
+.agents/
+.github/skills/
+.github/chat.json
+skills-lock.json
+
+# Nested repository backup (voip-mobile-app/.git was renamed)
+.git.bak/
+
+# OS
+.DS_Store
+Thumbs.db

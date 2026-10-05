@@ -1,0 +1,21 @@
+{
+  "name": "voip-call-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Standalone signaling server for Ringio app-only voice calls",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --env-file=.env server.js",
+    "test": "node --test",
+    "deploy": "npx --yes vercel --prod --yes"
+  },
+  "dependencies": {
+    "@socket.io/redis-adapter": "^8.3.0",
+    "express": "^5.2.1",
+    "redis": "^6.3.0",
+    "socket.io": "^4.8.4"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.4"
+  }
+}

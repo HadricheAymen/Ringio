@@ -1,0 +1,25 @@
+{
+  "name": "ringio-mock-voice-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Server-side Gemini Live voice agent for Ringio simulated calls",
+  "main": "mock-service.js",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env mock-service.js",
+    "start:agent": "npm run start:agent:local",
+    "start:agent:local": "node scripts/start-agent-local.js",
+    "start:agent:vercel": "cross-env CALL_SERVER_URL=https://voip-ringio-prototype.vercel.app node --env-file=.env agent.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22 <27"
+  },
+  "dependencies": {
+    "@google/genai": "^2.25.0",
+    "@roamhq/wrtc": "^0.10.0",
+    "socket.io-client": "^4.8.4"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3"
+  }
+}

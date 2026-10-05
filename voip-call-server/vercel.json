@@ -1,0 +1,22 @@
+{
+  "framework": "express",
+  "functions": {
+    "api/server.js": {
+      "maxDuration": 60,
+      "includeFiles": "public/**"
+    }
+  },
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/api/server",
+      "transforms": [
+        {
+          "type": "request.path",
+          "op": "set",
+          "args": "/$1"
+        }
+      ]
+    }
+  ]
+}

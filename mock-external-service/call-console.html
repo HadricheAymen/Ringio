@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#edf2e9" />
+    <title>Gemini Live Call Console | Ringio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        color-scheme: light;
+        --paper: #edf2e9;
+        --surface: #f9fbf6;
+        --ink: #18251e;
+        --muted: #68766c;
+        --line: #d5dfd4;
+        --forest: #1d4437;
+        --forest-deep: #132b24;
+        --lime: #d5f477;
+        --coral: #bd553f;
+        --mono: 'DM Mono', monospace;
+        --sans: 'Manrope', 'Avenir Next', sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        color: var(--ink);
+        background-color: var(--paper);
+        background-image: linear-gradient(rgba(29, 68, 55, .035) 1px, transparent 1px), linear-gradient(90deg, rgba(29, 68, 55, .035) 1px, transparent 1px);
+        background-size: 32px 32px;
+        font-family: var(--sans);
+      }
+      button, input, select { font: inherit; }
+      button { cursor: pointer; }
+      button:disabled { cursor: not-allowed; opacity: .48; }
+      .shell { width: min(1180px, calc(100% - 40px)); margin: 0 auto; padding: 26px 0 32px; }
+      .topbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-bottom: 20px; border-bottom: 1px solid var(--line); }
+      .brand { display: flex; align-items: center; gap: 11px; }
+      .brand-mark { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 8px; background: var(--lime); color: var(--forest-deep); font-weight: 800; }
+      .brand-name { font-size: 13px; font-weight: 800; }
+      .brand-sub { margin-top: 2px; color: var(--muted); font-family: var(--mono); font-size: 10px; }
+      .service-state { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-family: var(--mono); font-size: 11px; text-transform: uppercase; }
+      .lamp { width: 8px; height: 8px; border-radius: 50%; background: #a7b0a7; }
+      .lamp.online { background: #458465; box-shadow: 0 0 0 3px rgba(69, 132, 101, .14); }
+      .lamp.offline { background: var(--coral); }
+      main { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(320px, .85fr); gap: 48px; padding-top: 42px; }
+      .eyebrow { color: var(--forest); font-family: var(--mono); font-size: 10px; letter-spacing: 1.1px; text-transform: uppercase; }
+      h1 { max-width: 620px; margin: 12px 0 9px; font-family: Georgia, 'Times New Roman', serif; font-size: clamp(38px, 5vw, 60px); font-weight: 400; line-height: 1.02; }
+      .lede { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.7; }
+      .traits { display: flex; flex-wrap: wrap; gap: 8px; margin: 23px 0 34px; }
+      .trait { padding: 7px 10px; border: 1px solid var(--line); border-radius: 4px; color: #405248; background: rgba(249, 251, 246, .58); font-family: var(--mono); font-size: 10px; }
+      .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+      .section-head h2 { margin: 0; font-size: 13px; font-weight: 800; }
+      .micro { color: var(--muted); font-family: var(--mono); font-size: 10px; text-transform: uppercase; }
+      .form { padding-top: 18px; }
+      .field { margin-bottom: 19px; }
+      .label-line { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+      label { color: #33483b; font-size: 12px; font-weight: 700; }
+      .field-hint { color: var(--muted); font-family: var(--mono); font-size: 10px; }
+      .segmented { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 6px; background: #e4ebe1; }
+      .mode-button { min-height: 39px; border: 0; border-radius: 4px; color: #536157; background: transparent; font-size: 12px; font-weight: 700; }
+      .mode-button[aria-pressed="true"] { color: var(--surface); background: var(--forest); box-shadow: 0 1px 3px rgba(15, 35, 26, .18); }
+      .control { width: 100%; min-height: 46px; padding: 0 12px; border: 1px solid #c9d5c9; border-radius: 5px; outline: none; color: var(--ink); background: var(--surface); }
+      .control:focus { border-color: var(--forest); box-shadow: 0 0 0 3px rgba(29, 68, 55, .1); }
+      .number-input { font-family: var(--mono); font-size: 14px; }
+      .actions { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin-top: 24px; }
+      .primary, .stop { min-height: 48px; padding: 0 18px; border-radius: 5px; font-size: 12px; font-weight: 800; }
+      .primary { border: 1px solid var(--forest); color: #fff; background: var(--forest); }
+      .primary:hover:not(:disabled) { background: var(--forest-deep); }
+      .stop { min-width: 116px; border: 1px solid #d7b8ad; color: var(--coral); background: transparent; }
+      .voice-test { display: grid; gap: 10px; margin-top: 12px; }
+      .test-audio { min-height: 42px; justify-self: start; padding: 0 14px; border: 1px solid var(--forest); border-radius: 5px; color: var(--forest); background: transparent; font-size: 12px; font-weight: 700; }
+      .test-audio:hover:not(:disabled) { color: #fff; background: var(--forest); }
+      .voice-player { width: 100%; }
+      .notice { min-height: 22px; margin-top: 11px; color: var(--coral); font-size: 12px; }
+      .disclaimer { margin: 22px 0 0; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-family: var(--mono); font-size: 10px; line-height: 1.6; text-transform: uppercase; }
+      .live-column { min-width: 0; }
+      .live-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+      .live-head h2 { margin: 0; font-size: 13px; font-weight: 800; }
+      .phase { display: inline-flex; align-items: center; gap: 7px; padding: 6px 9px; border-radius: 4px; color: #31483a; background: #dfe9dc; font-family: var(--mono); font-size: 10px; text-transform: uppercase; }
+      .phase .lamp { width: 6px; height: 6px; }
+      .phase.active { color: #fff; background: var(--forest); }
+      .phase.active .lamp { background: var(--lime); }
+      .readout { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; padding: 16px 0 19px; border-bottom: 1px solid var(--line); }
+      .datum { min-width: 0; padding: 9px 0; }
+      .datum-label { color: var(--muted); font-family: var(--mono); font-size: 9px; text-transform: uppercase; }
+      .datum-value { overflow: hidden; margin-top: 6px; color: var(--ink); font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+      .activity { margin-top: 18px; overflow: hidden; border-radius: 6px; color: #e5eee4; background: var(--forest-deep); }
+      .activity-head { display: flex; align-items: center; justify-content: space-between; padding: 13px 15px; border-bottom: 1px solid rgba(229, 238, 228, .14); }
+      .activity-head h3 { margin: 0; font-family: var(--mono); font-size: 10px; font-weight: 500; text-transform: uppercase; }
+      .activity-head span { color: #9bac9f; font-family: var(--mono); font-size: 9px; }
+      .log { display: flex; max-height: 340px; min-height: 178px; flex-direction: column; gap: 0; overflow: auto; padding: 4px 15px 10px; list-style: none; }
+      .log-entry { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 10px; padding: 10px 0; border-bottom: 1px solid rgba(229, 238, 228, .09); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+      .log-time { color: #9bac9f; font-family: var(--mono); font-size: 9px; }
+      .log-empty { padding: 18px 0; color: #9bac9f; font-family: var(--mono); font-size: 10px; }
+      .foot { display: flex; justify-content: space-between; gap: 12px; margin-top: 30px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-family: var(--mono); font-size: 9px; text-transform: uppercase; }
+      @media (max-width: 760px) {
+        .shell { width: min(100% - 28px, 560px); padding-top: 16px; }
+        main { grid-template-columns: 1fr; gap: 34px; padding-top: 30px; }
+        h1 { font-size: 44px; }
+        .traits { margin-bottom: 27px; }
+        .readout { grid-template-columns: 1fr 1fr; }
+        .foot { flex-direction: column; }
+      }
+      @media (prefers-reduced-motion: no-preference) {
+        main { animation: arrive .35s ease-out both; }
+        @keyframes arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">R</div>
+          <div><div class="brand-name">Ringio</div><div class="brand-sub">VOICE SYSTEMS / LOCAL CONSOLE</div></div>
+        </div>
+        <div class="service-state"><span class="lamp" id="serviceLamp"></span><span id="serviceState">Checking console</span></div>
+      </header>
+
+      <main>
+        <section aria-labelledby="title">
+          <div class="eyebrow">Outbound test line / 01</div>
+          <h1 id="title">Gemini Live<br />call console</h1>
+          <p class="lede">Tunisian Derja voice agent with greeting-first, two-way mobile audio.</p>
+          <div class="traits" aria-label="Call capabilities">
+            <span class="trait">GEMINI LIVE</span>
+            <span class="trait">DERJA / FR</span>
+            <span class="trait">WEBRTC AUDIO</span>
+            <span class="trait">TRANSCRIPT + WAV</span>
+          </div>
+
+          <div class="section-head">
+            <h2>New simulated call</h2>
+            <span class="micro">No PSTN</span>
+          </div>
+          <form class="form" id="callForm">
+            <div class="field">
+              <div class="label-line"><label>Call server</label><span class="field-hint">Choose destination</span></div>
+              <div class="segmented" role="group" aria-label="Call server">
+                <button class="mode-button" type="button" data-mode="local" aria-pressed="true">Local network</button>
+                <button class="mode-button" type="button" data-mode="vercel" aria-pressed="false">Vercel</button>
+              </div>
+            </div>
+            <div class="field">
+              <div class="label-line"><label for="targetNumber">Simulated mobile number</label><span class="field-hint">E.164</span></div>
+              <input class="control number-input" id="targetNumber" name="targetNumber" inputmode="tel" autocomplete="off" value="+15550001234" required />
+            </div>
+            <div class="field">
+              <div class="label-line"><label for="availabilityPolicy">If no phone is available</label></div>
+              <select class="control" id="availabilityPolicy" name="availabilityPolicy">
+                <option value="reject">Reject immediately</option>
+                <option value="queue">Queue until available</option>
+              </select>
+            </div>
+            <div class="actions">
+              <button class="primary" id="startButton" type="submit">Start Gemini call</button>
+              <button class="stop" id="stopButton" type="button" disabled>End call</button>
+            </div>
+            <div class="voice-test">
+              <button class="test-audio" id="voiceTestButton" type="button">Test voice on PC</button>
+              <audio class="voice-player" id="voiceTestPlayer" controls hidden aria-label="Gemini PC voice test playback"></audio>
+            </div>
+            <div class="notice" id="notice" role="alert"></div>
+          </form>
+          <p class="disclaimer">Number is simulated. No SIM or telephone network is used.</p>
+        </section>
+
+        <section class="live-column" aria-labelledby="activityTitle">
+          <div class="live-head">
+            <h2 id="activityTitle">Call activity</h2>
+            <span class="phase" id="phaseBadge"><span class="lamp"></span><span id="phaseText">Ready</span></span>
+          </div>
+          <div class="readout">
+            <div class="datum"><div class="datum-label">Agent</div><div class="datum-value">Gemini Live</div></div>
+            <div class="datum"><div class="datum-label">Destination</div><div class="datum-value" id="destinationValue">Not started</div></div>
+            <div class="datum"><div class="datum-label">Call server</div><div class="datum-value" id="serverValue">Local network</div></div>
+            <div class="datum"><div class="datum-label">Conversation</div><div class="datum-value" id="conversationValue">Waiting for call</div></div>
+          </div>
+          <div class="activity">
+            <div class="activity-head"><h3>Agent events</h3><span id="eventCount">0 EVENTS</span></div>
+            <ol class="log" id="eventLog" aria-live="polite"><li class="log-empty">No agent session yet.</li></ol>
+          </div>
+        </section>
+      </main>
+      <footer class="foot"><span>Controls are served on this computer only</span><span>Gemini key remains server-side</span></footer>
+    </div>
+
+    <script>
+      const PHASE_LABELS = {
+        idle: 'Ready', starting: 'Starting', connecting: 'Connecting', registering: 'Registering', dialing: 'Dialing',
+        queued: 'Queued', ringing: 'Ringing', starting_gemini: 'Starting Gemini', greeting: 'Greeting',
+        live: 'Live conversation', ending: 'Ending', ended: 'Ended', rejected: 'Rejected', error: 'Error',
+      };
+      const ACTIVE_PHASES = new Set(['starting', 'connecting', 'registering', 'dialing', 'queued', 'ringing', 'starting_gemini', 'greeting', 'live', 'ending']);
+      const modeButtons = [...document.querySelectorAll('[data-mode]')];
+      const serviceLamp = document.getElementById('serviceLamp');
+      const serviceState = document.getElementById('serviceState');
+      const phaseBadge = document.getElementById('phaseBadge');
+      const phaseText = document.getElementById('phaseText');
+      const eventLog = document.getElementById('eventLog');
+      const notice = document.getElementById('notice');
+      const startButton = document.getElementById('startButton');
+      const stopButton = document.getElementById('stopButton');
+      const voiceTestButton = document.getElementById('voiceTestButton');
+      const voiceTestPlayer = document.getElementById('voiceTestPlayer');
+      let serverMode = 'local';
+      let currentPhase = 'idle';
+      let currentRunning = false;
+      let voiceTestRunning = false;
+      let voiceTestUrl = null;
+
+      async function api(path, options = {}) {
+        const response = await fetch(path, {
+          ...options,
+          headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Request failed (${response.status}).`);
+        return data;
+      }
+
+      function renderEvents(events) {
+        document.getElementById('eventCount').textContent = `${events.length} EVENT${events.length === 1 ? '' : 'S'}`;
+        eventLog.replaceChildren();
+        if (!events.length) {
+          const empty = document.createElement('li');
+          empty.className = 'log-empty';
+          empty.textContent = 'No agent session yet.';
+          eventLog.append(empty);
+          return;
+        }
+        for (const event of events.slice().reverse()) {
+          const row = document.createElement('li');
+          row.className = 'log-entry';
+          const time = document.createElement('time');
+          time.className = 'log-time';
+          time.textContent = new Date(event.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+          const message = document.createElement('span');
+          message.textContent = event.message;
+          row.append(time, message);
+          eventLog.append(row);
+        }
+      }
+
+      function render(state) {
+        currentPhase = state.phase || 'idle';
+        currentRunning = !!state.running;
+        serviceLamp.classList.toggle('online', true);
+        serviceLamp.classList.remove('offline');
+        serviceState.textContent = 'Console online';
+        phaseText.textContent = PHASE_LABELS[currentPhase] || currentPhase;
+        phaseBadge.classList.toggle('active', ACTIVE_PHASES.has(currentPhase));
+        startButton.disabled = currentRunning || voiceTestRunning || ACTIVE_PHASES.has(currentPhase);
+        stopButton.disabled = !currentRunning;
+        voiceTestButton.disabled = currentRunning || voiceTestRunning;
+        modeButtons.forEach((button) => {
+          button.setAttribute('aria-pressed', String(button.dataset.mode === serverMode));
+          button.disabled = currentRunning;
+        });
+        document.getElementById('targetNumber').disabled = currentRunning;
+        document.getElementById('availabilityPolicy').disabled = currentRunning;
+        document.getElementById('destinationValue').textContent = state.targetNumber || 'Not started';
+        document.getElementById('serverValue').textContent = state.serverUrl || (serverMode === 'vercel' ? 'Vercel production' : 'Local network');
+        document.getElementById('conversationValue').textContent = currentPhase === 'live' ? 'Two-way audio active' : currentPhase === 'greeting' ? 'Derja introduction' : currentPhase === 'queued' ? 'Waiting for a phone' : 'Waiting for call';
+        renderEvents(state.logs || []);
+      }
+
+      async function refresh() {
+        try {
+          render(await api('/api/status'));
+        } catch (error) {
+          serviceLamp.classList.remove('online');
+          serviceLamp.classList.add('offline');
+          serviceState.textContent = 'Console offline';
+          startButton.disabled = true;
+          stopButton.disabled = true;
+          voiceTestButton.disabled = true;
+          notice.textContent = error.message;
+        }
+      }
+
+      modeButtons.forEach((button) => button.addEventListener('click', () => {
+        if (currentRunning) return;
+        serverMode = button.dataset.mode;
+        document.getElementById('serverValue').textContent = serverMode === 'vercel' ? 'Vercel production' : 'Local network';
+        modeButtons.forEach((candidate) => candidate.setAttribute('aria-pressed', String(candidate === button)));
+      }));
+
+      document.getElementById('callForm').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        notice.textContent = '';
+        startButton.disabled = true;
+        try {
+          await api('/api/agent/start', {
+            method: 'POST',
+            body: JSON.stringify({
+              serverMode,
+              targetNumber: document.getElementById('targetNumber').value,
+              availabilityPolicy: document.getElementById('availabilityPolicy').value,
+            }),
+          });
+          await refresh();
+        } catch (error) {
+          notice.textContent = error.message;
+          startButton.disabled = false;
+        }
+      });
+
+      stopButton.addEventListener('click', async () => {
+        notice.textContent = '';
+        stopButton.disabled = true;
+        try {
+          await api('/api/agent/stop', { method: 'POST', body: '{}' });
+          await refresh();
+        } catch (error) {
+          notice.textContent = error.message;
+          stopButton.disabled = false;
+        }
+      });
+
+      voiceTestButton.addEventListener('click', async () => {
+        notice.textContent = 'Generating a short Gemini voice test…';
+        voiceTestRunning = true;
+        voiceTestButton.disabled = true;
+        startButton.disabled = true;
+        voiceTestPlayer.pause();
+        try {
+          const response = await fetch('/api/agent/voice-test', { method: 'POST' });
+          if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || `Request failed (${response.status}).`);
+          }
+          const audio = await response.blob();
+          if (voiceTestUrl) URL.revokeObjectURL(voiceTestUrl);
+          voiceTestUrl = URL.createObjectURL(audio);
+          voiceTestPlayer.src = voiceTestUrl;
+          voiceTestPlayer.hidden = false;
+          try {
+            await voiceTestPlayer.play();
+            notice.textContent = 'Playing the voice test through this PC.';
+          } catch {
+            notice.textContent = 'Voice test ready. Press play to hear it through this PC.';
+          }
+        } catch (error) {
+          notice.textContent = error.message;
+        } finally {
+          voiceTestRunning = false;
+          voiceTestButton.disabled = currentRunning;
+          startButton.disabled = currentRunning || ACTIVE_PHASES.has(currentPhase);
+        }
+      });
+
+      refresh();
+      setInterval(refresh, 1000);
+    </script>
+  </body>
+</html>
