@@ -2,11 +2,14 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 const { fork } = require('node:child_process');
+
+try { process.loadEnvFile?.(path.join(__dirname, '.env')); } catch {}
+
 const { getLanAddress } = require('./scripts/lanAddress');
 const { generateVoiceTestWav } = require('./voiceTest');
 
 const PORT = Number(process.env.PORT || 4200);
-const HOST = '127.0.0.1';
+const HOST = '0.0.0.0';
 const VERCEL_CALL_SERVER_URL = 'https://voip-ringio-prototype.vercel.app';
 const MAX_LOG_ENTRIES = 80;
 const agentState = {
