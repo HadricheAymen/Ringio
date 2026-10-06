@@ -14,8 +14,8 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: '*' },
-  pingInterval: 10000,
-  pingTimeout: 5000,
+  pingInterval: 25000,
+  pingTimeout: 20000,
 });
 const state = createStateStore(io, process.env.REDIS_URL);
 
@@ -42,6 +42,7 @@ app.use('/api', (_req, res, next) => {
   return next();
 });
 app.use(express.json());
+app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'dashboard.html')));
 app.use(express.static(path.join(__dirname, 'public')));
 
 function sendError(socket, code, message) {
@@ -61,10 +62,17 @@ function normalizeAvailabilityPolicy(value) {
 async function getEndpointSnapshot(endpointId) {
   const socketId = await state.getEndpoint(endpointId);
   if (!socketId) return null;
-  const busy = await state.getSocketCall(socketId);
+  const [callId, appId] = await Promise.all([
+    state.getSocketCall(socketId),
+    state.getEndpointAppId(endpointId),
+  ]);
+  const app = appId ? await state.getAppMetadata(appId) : null;
+  const busy = !!callId;
+  const blocked = !!app?.blocked;
   return {
-    status: busy ? 'busy' : 'online',
-    available: !busy,
+    status: busy ? 'busy' : blocked ? 'blocked' : 'online',
+    available: !busy && !blocked,
+    blocked,
     lastSeen: new Date().toISOString(),
   };
 }
@@ -107,20 +115,24 @@ async function assignCall(callRecord, session, endpoint) {
 }
 
 async function dispatchQueuedCalls() {
+  let queueChanged = false;
   await state.withRoutingLock(async () => {
     for (const callId of await state.listQueuedCalls()) {
       const callRecord = await state.getCall(callId);
       const session = await state.getSession(callId);
       if (!callRecord || !session || callRecord.dispatchState !== 'waiting') {
         await state.removeQueuedCall(callId);
+        queueChanged = true;
         continue;
       }
       const endpoint = await state.reserveAvailableEndpoint(callId);
       if (!endpoint) return;
       await state.removeQueuedCall(callId);
+      queueChanged = true;
       await assignCall(callRecord, session, endpoint);
     }
   });
+  if (queueChanged) io.emit('queue:changed');
 }
 
 async function createOutboundCall({ from, number, availabilityPolicy, callerSocketId, recordingEnabled = false, media }) {
@@ -211,6 +223,7 @@ async function createOutboundCall({ from, number, availabilityPolicy, callerSock
     if (endpoint) await assignCall(callRecord, session, endpoint);
   });
 
+  if (queued) io.emit('queue:changed');
   if (!endpoint && callerSocketId) io.to(callerSocketId).emit('call:queued', { callId, number, policy: availabilityPolicy });
   return { callRecord, queued };
 }
@@ -274,6 +287,7 @@ async function endSession(callId, reason, actorSocketId, disconnectedParticipant
       }
     }
   });
+  if (ended) io.emit('queue:changed');
   if (releasedEndpointId) io.emit('directory:changed', { online: true, available: true });
   if (ended) await dispatchQueuedCalls();
   return ended;
@@ -281,26 +295,37 @@ async function endSession(callId, reason, actorSocketId, disconnectedParticipant
 
 registerHttpApiRoutes(app, {
   state,
+  io,
   getEndpointSnapshot,
   incomingCallPayload,
   createOutboundCall,
+  dispatchQueuedCalls,
   endSession,
   internalAgentToken: INTERNAL_AGENT_TOKEN,
 });
 
 io.on('connection', (socket) => {
-  socket.on('participant:register', async ({ role, mediaSource } = {}) => {
+  socket.on('participant:register', async ({ role, mediaSource, appId: requestedAppId, name, platform } = {}) => {
     if (role === 'phone') {
       const endpointId = randomUUID();
-      await state.setEndpoint(endpointId, socket.id);
+      const appId = typeof requestedAppId === 'string' && /^[a-zA-Z0-9_-]{8,128}$/.test(requestedAppId)
+        ? requestedAppId
+        : randomUUID();
+      const appMetadata = {
+        appId,
+        name: typeof name === 'string' && name.trim() ? name.trim().slice(0, 48) : 'Ringio mobile app',
+        platform: ['android', 'ios', 'web'].includes(platform) ? platform : 'unknown',
+      };
+      await state.setEndpoint(endpointId, socket.id, appMetadata);
       socket.data.role = 'phone';
       socket.data.endpointId = endpointId;
+      socket.data.appId = appId;
       socket.data.presenceTimer = setInterval(() => {
         state.refreshEndpoint(endpointId, socket.id).catch((error) => console.error(error.message));
       }, 25000);
       socket.data.presenceTimer.unref?.();
       io.emit('directory:changed', { online: true, available: true });
-      socket.emit('participant:registered', { role, endpointId });
+      socket.emit('participant:registered', { role, endpointId, appId });
       await dispatchQueuedCalls();
       return;
     }

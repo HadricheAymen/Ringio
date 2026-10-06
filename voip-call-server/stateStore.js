@@ -4,6 +4,8 @@ const { randomUUID } = require('crypto');
 
 const PREFIX = 'ringio:v1';
 const ENDPOINT_INDEX = `${PREFIX}:endpoints`;
+const APP_INDEX = `${PREFIX}:apps`;
+const APP_ORDER = `${PREFIX}:app-order`;
 const CALL_INDEX = `${PREFIX}:calls`;
 const RECORDING_INDEX = `${PREFIX}:recordings`;
 const PHONE_TTL_SECONDS = 75;
@@ -13,6 +15,9 @@ const ROUTING_LOCK = `${PREFIX}:routing-lock`;
 function createStateStore(io, redisUrl) {
   const local = {
     endpoints: new Map(),
+    endpointApps: new Map(),
+    appMetadata: new Map(),
+    appOrder: [],
     endpointCalls: new Map(),
     queuedCalls: [],
     socketCalls: new Map(),
@@ -65,14 +70,82 @@ function createStateStore(io, redisUrl) {
       return run(() => redis ? redis.get(key('endpoint', endpointId)) : local.endpoints.get(endpointId) || null);
     },
 
-    async setEndpoint(endpointId, socketId) {
+    async getEndpointAppId(endpointId) {
+      return run(() => redis
+        ? redis.get(key('endpoint-app', endpointId))
+        : local.endpointApps.get(endpointId) || null);
+    },
+
+    async getAppMetadata(appId) {
       return run(async () => {
+        if (!redis) return local.appMetadata.get(appId) || null;
+        const value = await redis.get(key('app', appId));
+        return value ? JSON.parse(value) : null;
+      });
+    },
+
+    async setAppBlocked(appId, blocked) {
+      return run(async () => {
+        const metadata = await this.getAppMetadata(appId);
+        if (!metadata) return null;
+        const updated = { ...metadata, blocked };
+        local.appMetadata.set(appId, updated);
+        if (redis) await redis.set(key('app', appId), JSON.stringify(updated));
+        return updated;
+      });
+    },
+
+    async renameApp(appId, name) {
+      return run(async () => {
+        const metadata = await this.getAppMetadata(appId);
+        if (!metadata) return null;
+        const updated = { ...metadata, name };
+        local.appMetadata.set(appId, updated);
+        if (redis) await redis.set(key('app', appId), JSON.stringify(updated));
+        return updated;
+      });
+    },
+
+    async listAppOrder() {
+      return run(() => redis ? redis.lRange(APP_ORDER, 0, -1) : [...local.appOrder]);
+    },
+
+    async moveApp(appId, direction) {
+      return run(async () => {
+        const order = redis ? await redis.lRange(APP_ORDER, 0, -1) : [...local.appOrder];
+        const index = order.indexOf(appId);
+        const target = index + (direction === 'up' ? -1 : 1);
+        if (index < 0 || target < 0 || target >= order.length) return order;
+        [order[index], order[target]] = [order[target], order[index]];
+        if (redis) await redis.multi().del(APP_ORDER).rPush(APP_ORDER, order).exec();
+        else local.appOrder = order;
+        return order;
+      });
+    },
+
+    async setEndpoint(endpointId, socketId, app = {}) {
+      return run(async () => {
+        const appId = app.appId || await this.getEndpointAppId(endpointId) || endpointId;
+        const previousMetadata = await this.getAppMetadata(appId);
+        const metadata = {
+          appId,
+          name: previousMetadata?.name || app.name || 'Ringio mobile app',
+          platform: app.platform || previousMetadata?.platform || 'unknown',
+          blocked: previousMetadata?.blocked || false,
+        };
         local.endpoints.set(endpointId, socketId);
+        local.endpointApps.set(endpointId, metadata.appId);
+        local.appMetadata.set(metadata.appId, metadata);
+        if (!local.appOrder.includes(metadata.appId)) local.appOrder.push(metadata.appId);
         if (redis) {
+          const added = await redis.sAdd(APP_INDEX, metadata.appId);
           await redis.multi()
             .set(key('endpoint', endpointId), socketId, { EX: PHONE_TTL_SECONDS })
+            .set(key('endpoint-app', endpointId), metadata.appId, { EX: PHONE_TTL_SECONDS })
+            .set(key('app', metadata.appId), JSON.stringify(metadata))
             .sAdd(ENDPOINT_INDEX, endpointId)
             .exec();
+          if (added) await redis.rPush(APP_ORDER, metadata.appId);
         }
       });
     },
@@ -82,7 +155,11 @@ function createStateStore(io, redisUrl) {
         const current = redis ? await redis.get(key('endpoint', endpointId)) : local.endpoints.get(endpointId);
         if (current !== socketId) return false;
         local.endpoints.delete(endpointId);
-        if (redis) await redis.multi().del(key('endpoint', endpointId)).sRem(ENDPOINT_INDEX, endpointId).exec();
+        local.endpointApps.delete(endpointId);
+        if (redis) await redis.multi()
+          .del(key('endpoint', endpointId), key('endpoint-app', endpointId))
+          .sRem(ENDPOINT_INDEX, endpointId)
+          .exec();
         return true;
       });
     },
@@ -106,7 +183,10 @@ function createStateStore(io, redisUrl) {
       return run(async () => {
         const current = redis ? await redis.get(key('endpoint', endpointId)) : local.endpoints.get(endpointId);
         if (current !== socketId) return false;
-        if (redis) await redis.expire(key('endpoint', endpointId), PHONE_TTL_SECONDS);
+        if (redis) await redis.multi()
+          .expire(key('endpoint', endpointId), PHONE_TTL_SECONDS)
+          .expire(key('endpoint-app', endpointId), PHONE_TTL_SECONDS)
+          .exec();
         return true;
       });
     },
@@ -141,7 +221,13 @@ function createStateStore(io, redisUrl) {
     async reserveAvailableEndpoint(callId) {
       return run(async () => {
         if (!redis) {
-          for (const [endpointId, socketId] of local.endpoints) {
+          const priorities = new Map(local.appOrder.map((appId, index) => [appId, index]));
+          const endpoints = [...local.endpoints.entries()].sort(([left], [right]) => (
+            (priorities.get(local.endpointApps.get(left)) ?? Number.MAX_SAFE_INTEGER)
+            - (priorities.get(local.endpointApps.get(right)) ?? Number.MAX_SAFE_INTEGER)
+          ));
+          for (const [endpointId, socketId] of endpoints) {
+            if (local.appMetadata.get(local.endpointApps.get(endpointId))?.blocked) continue;
             if (!local.endpointCalls.has(endpointId)) {
               local.endpointCalls.set(endpointId, callId);
               return { endpointId, socketId };
@@ -151,7 +237,19 @@ function createStateStore(io, redisUrl) {
         }
 
         const endpointIds = await redis.sMembers(ENDPOINT_INDEX);
-        for (const endpointId of endpointIds) {
+        const appOrder = await redis.lRange(APP_ORDER, 0, -1);
+        const priorities = new Map(appOrder.map((appId, index) => [appId, index]));
+        const endpoints = await Promise.all(endpointIds.map(async (endpointId) => ({
+          endpointId,
+          appId: await redis.get(key('endpoint-app', endpointId)),
+        })));
+        endpoints.sort((left, right) => (
+          (priorities.get(left.appId) ?? Number.MAX_SAFE_INTEGER)
+          - (priorities.get(right.appId) ?? Number.MAX_SAFE_INTEGER)
+        ));
+        for (const { endpointId, appId } of endpoints) {
+          const metadata = appId ? await redis.get(key('app', appId)) : null;
+          if (metadata && JSON.parse(metadata).blocked) continue;
           const socketId = await redis.get(key('endpoint', endpointId));
           if (!socketId) {
             await redis.sRem(ENDPOINT_INDEX, endpointId);

@@ -2,7 +2,7 @@
   "framework": "express",
   "functions": {
     "api/server.js": {
-      "maxDuration": 60,
+      "maxDuration": 300,
       "includeFiles": "public/**"
     }
   },

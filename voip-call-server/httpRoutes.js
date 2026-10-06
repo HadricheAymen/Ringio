@@ -22,9 +22,11 @@ function registerApiDiscoveryRoutes(app) {
 
 function registerHttpApiRoutes(app, {
   state,
+  io,
   getEndpointSnapshot,
   incomingCallPayload,
   createOutboundCall,
+  dispatchQueuedCalls,
   endSession,
   internalAgentToken,
 }) {
@@ -64,6 +66,81 @@ function registerHttpApiRoutes(app, {
     return res.json(list);
   });
 
+  app.get('/api/mobile-apps', async (_req, res) => {
+    const [entries, order] = await Promise.all([state.listEndpoints(), state.listAppOrder()]);
+    const priorities = new Map(order.map((appId, index) => [appId, index]));
+    const apps = await Promise.all(entries.map(async ([endpointId]) => {
+      const [registeredAppId, snapshot] = await Promise.all([
+        state.getEndpointAppId(endpointId),
+        getEndpointSnapshot(endpointId),
+      ]);
+      if (!snapshot) return null;
+      const appId = registeredAppId || endpointId;
+      const metadata = await state.getAppMetadata(appId);
+      return {
+        appId,
+        name: metadata?.name || 'Ringio mobile app',
+        platform: metadata?.platform || 'unknown',
+        status: snapshot.status,
+        available: snapshot.available,
+        blocked: snapshot.blocked ?? !!metadata?.blocked,
+        priority: (priorities.get(appId) ?? order.length) + 1,
+      };
+    }));
+    return res.json(apps.filter(Boolean).sort((left, right) => left.priority - right.priority));
+  });
+
+  app.post('/api/mobile-apps/:appId/priority', async (req, res) => {
+    const { appId } = req.params;
+    const { direction } = req.body || {};
+    if (!['up', 'down'].includes(direction)) {
+      return res.status(400).json({ error: 'direction must be up or down.' });
+    }
+    if (!await state.getAppMetadata(appId)) return res.status(404).json({ error: 'Mobile app not found.' });
+    const order = await state.withRoutingLock(() => state.moveApp(appId, direction));
+    io?.emit('directory:changed', { apps: true });
+    return res.json({ appId, priority: order.indexOf(appId) + 1 });
+  });
+
+  app.post('/api/mobile-apps/:appId/block', async (req, res) => {
+    const { appId } = req.params;
+    const { blocked } = req.body || {};
+    if (typeof blocked !== 'boolean') return res.status(400).json({ error: 'blocked must be a boolean.' });
+    const app = await state.withRoutingLock(() => state.setAppBlocked(appId, blocked));
+    if (!app) return res.status(404).json({ error: 'Mobile app not found.' });
+    io?.emit('directory:changed', { apps: true });
+    if (!blocked) await dispatchQueuedCalls?.();
+    return res.json({ appId, blocked: app.blocked });
+  });
+
+  app.post('/api/mobile-apps/:appId/name', async (req, res) => {
+    const { appId } = req.params;
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!name || name.length > 48) return res.status(400).json({ error: 'name must contain 1 to 48 characters.' });
+    const app = await state.renameApp(appId, name);
+    if (!app) return res.status(404).json({ error: 'Mobile app not found.' });
+    io?.emit('directory:changed', { apps: true });
+    return res.json({ appId, name: app.name });
+  });
+
+  app.get('/api/queued-calls', async (_req, res) => {
+    const callIds = await state.listQueuedCalls();
+    const queuedCalls = await Promise.all(callIds.map(async (callId) => {
+      const call = await state.getCall(callId);
+      if (!call || call.status !== 'queued' || call.dispatchState !== 'waiting') return null;
+      const queuedAt = call.timestamps.createdAt;
+      return {
+        callId,
+        number: call.to.number,
+        caller: call.from.metadata?.name || call.from.role || 'Caller',
+        mediaSource: call.from.mediaSource,
+        queuedAt,
+        waitSeconds: Math.max(0, Math.floor((Date.now() - Date.parse(queuedAt)) / 1000)),
+      };
+    }));
+    return res.json(queuedCalls.filter(Boolean));
+  });
+
   app.get('/api/available-numbers', async (_req, res) => {
     const entries = await state.listEndpoints();
     const list = (await Promise.all(entries.map(([endpointId]) => getEndpointSnapshot(endpointId))))
@@ -80,10 +157,13 @@ function registerHttpApiRoutes(app, {
     const snapshots = await Promise.all(entries.map(([endpointId]) => getEndpointSnapshot(endpointId)));
     const onlineMachines = snapshots.filter(Boolean).length;
     const availableMachines = snapshots.filter((entry) => entry?.available).length;
+    const busyMachines = snapshots.filter((entry) => entry?.status === 'busy').length;
+    const blockedMachines = snapshots.filter((entry) => entry?.blocked).length;
     return res.json({
       onlineMachines,
       availableMachines,
-      busyMachines: onlineMachines - availableMachines,
+      busyMachines,
+      blockedMachines,
       queuedCalls: queuedCalls.length,
       canLaunchCall: availableMachines > 0 && queuedCalls.length === 0,
     });

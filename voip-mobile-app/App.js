@@ -1,6 +1,7 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { ActivityIndicator, Pressable, SafeAreaView, StyleSheet, Text, TextInput, View } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ActivityIndicator, Platform, Pressable, SafeAreaView, StyleSheet, Text, TextInput, View } from 'react-native';
 import InCallManager from 'react-native-incall-manager';
 import { io } from 'socket.io-client';
 import {
@@ -11,6 +12,19 @@ import {
 } from 'react-native-webrtc';
 
 const RTC_CONFIG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+const MOBILE_APP_ID_KEY = 'ringio.mobileAppId';
+
+async function getMobileAppId() {
+  try {
+    const storedId = await AsyncStorage.getItem(MOBILE_APP_ID_KEY);
+    if (storedId) return storedId;
+    const appId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+    await AsyncStorage.setItem(MOBILE_APP_ID_KEY, appId);
+    return appId;
+  } catch {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+}
 
 export default function App() {
   const [serverUrl, setServerUrl] = useState(process.env.EXPO_PUBLIC_CALL_SERVER_URL || 'https://voip-ringio-prototype.vercel.app');
@@ -29,6 +43,7 @@ export default function App() {
   const seenSignalIdsRef = useRef(new Set());
   const peerRef = useRef(null);
   const localStreamRef = useRef(null);
+  const remoteStreamRef = useRef(null);
   const callIdRef = useRef(null);
   const candidatesRef = useRef([]);
   const audioModeActiveRef = useRef(false);
@@ -41,11 +56,27 @@ export default function App() {
     peerRef.current = null;
     if (localStreamRef.current) localStreamRef.current.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
+    if (remoteStreamRef.current) {
+      remoteStreamRef.current.getTracks().forEach((track) => track.stop());
+      remoteStreamRef.current = null;
+    }
     if (audioModeActiveRef.current) {
       InCallManager.stop();
       audioModeActiveRef.current = false;
     }
     candidatesRef.current = [];
+  };
+
+  const attachRemoteStream = (stream) => {
+    if (!stream) return;
+    remoteStreamRef.current = stream;
+    const audioTracks = stream.getAudioTracks ? stream.getAudioTracks() : [];
+    audioTracks.forEach((track) => {
+      if (track && typeof track.enabled === 'boolean') track.enabled = true;
+    });
+    if (audioTracks.length > 0) {
+      setMessage('Gemini audio connected · speak through your phone.');
+    }
   };
 
   const finishCall = (nextMessage = 'Ready for the next call.') => {
@@ -175,9 +206,11 @@ export default function App() {
       peer = new RTCPeerConnection(await getRtcConfig());
       peerRef.current = peer;
       stream.getTracks().forEach((track) => peer.addTrack(track, stream));
-      peer.ontrack = () => {
-        setMessage('Gemini audio connected · speak through your phone.');
+      peer.ontrack = (event) => {
+        const streamToAttach = event.streams?.[0] || event.stream;
+        attachRemoteStream(streamToAttach);
       };
+      peer.onaddstream = (event) => attachRemoteStream(event.stream);
       peer.onicecandidate = ({ candidate }) => {
         if (candidate && callIdRef.current === callId) {
           socketRef.current?.emit('rtc:ice', { callId, candidate });
@@ -263,14 +296,22 @@ export default function App() {
       timeout: 10000,
     });
     socketRef.current = socket;
-    socket.on('connect', () => {
+    socket.on('connect', async () => {
       setConnection('connected');
       if (callIdRef.current) {
         socket.emit('call:reconnect', { callId: callIdRef.current, role: 'phone' });
         setMessage('Connected · speak through your phone.');
       } else {
         setPhoneRegistered(false);
-        socket.emit('participant:register', { role: 'phone' });
+        const appId = await getMobileAppId();
+        if (socket.connected) {
+          socket.emit('participant:register', {
+            role: 'phone',
+            appId,
+            name: 'Ringio Voice',
+            platform: Platform.OS,
+          });
+        }
       }
       if (incomingPollRef.current) clearInterval(incomingPollRef.current);
       incomingPollRef.current = null;

@@ -13,17 +13,17 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for layer ownership and end-to-end call f
 1. In this folder, run `npm install` and then `npm start`.
 2. The server listens on port `4100`; mobile apps register as private server endpoints without a user-facing extension.
 3. In `voip-mobile-app`, install the native Android development app with `npm run android` if needed, then run `npm run start:local`. The launcher detects the PC's LAN IPv4 and configures the app for the local server; keep the phone on a reachable network.
-4. Open `http://<PC-LAN-IP>:4100` on the PC, allow microphone access, enter a simulated destination number such as `+15551234567`, choose what to do if no app is available, and answer on the phone.
+4. Open `http://<PC-LAN-IP>:4100` on the PC to monitor connected apps, their availability and priority, blocked apps, and queued calls.
 
-Destination numbers are simulation data only: no SIM or PSTN call is made. The server reserves an idle registered app and passes the entered number to it. The PC browser and phone exchange call audio directly over WebRTC; Socket.IO relays registration, call control, and signaling. The server serves the web call page and exposes `/health`.
+The server root is an operations dashboard and does not place calls. External callers and agents continue to create simulated calls through the REST and Socket.IO APIs. Destination numbers are simulation data only: no SIM or PSTN call is made. Socket.IO relays registration, call control, and WebRTC signaling; audio flows directly between call participants.
 
 ## Deploy to Vercel
 
-Deploy this directory as the Vercel project root. `api/server.js` exports the Node.js HTTP server, and `vercel.json` routes all requests through it while preserving their paths. The call desk is available at the deployment root; REST and Socket.IO paths stay unchanged. Enable Fluid Compute because Vercel WebSocket support requires it. The mobile app fallback URL and the Gemini Live console's Vercel mode use `https://voip-ringio-prototype.vercel.app`.
+Deploy this directory as the Vercel project root. `api/server.js` exports the Node.js HTTP server, and `vercel.json` routes all requests through it while preserving their paths. The operations dashboard is available at the deployment root; REST and Socket.IO paths stay unchanged. Enable Fluid Compute because Vercel WebSocket support requires it. The mobile app fallback URL and the Gemini Live console's Vercel mode use `https://voip-ringio-prototype.vercel.app`.
 
 The production project uses the free Upstash Redis integration with auto-upgrade disabled. Vercel supplies `REDIS_URL`; the Socket.IO Redis adapter shares app presence and signaling across function instances, while Redis stores endpoint reservations, the FIFO waiting-call queue, call history, media events, and recording metadata. Local runs without `REDIS_URL` use in-memory state. Do not remove the production Redis variable: the Vercel API and Socket.IO endpoints return an error instead of silently using isolated memory if it is missing.
 
-Vercel WebSockets are in beta. This project sets a 60-second function duration, so active connections may reconnect at that limit. WebRTC audio still flows directly between the browser and phone. The web desk mixes both audio tracks and downloads a WebM recording to the caller PC; only recording metadata is sent to Redis. REST-only calls have no browser recorder and are marked accordingly. Vercel does not receive or store the audio file. The Upstash free plan has usage limits; monitor its dashboard, and auto-upgrade is disabled.
+Vercel WebSockets are in beta. This project sets the function duration to 300 seconds, the current Hobby plan maximum; active connections may reconnect at that limit. WebRTC audio flows directly between external caller/agent clients and the phone; the operations dashboard does not join calls or receive media. The Upstash free plan has usage limits; monitor its dashboard, and auto-upgrade is disabled.
 
 ## Public API contract
 
@@ -76,6 +76,8 @@ GET `/api/capacity`
 `canLaunchCall` is false if there are no idle apps or if existing calls are waiting in the FIFO queue. Poll this endpoint from an external service before requesting a call; call creation can still race with another caller, so handle a `503` from `POST /api/calls` as the final authority.
 
 Mobile apps register over Socket.IO with `participant:register` and `{ "role": "phone" }`. The server returns a private `endpointId`; callers never use that ID as a destination.
+
+The mobile app also registers a persistent installation ID, display name, and platform. Open `/` to view connected apps, their status and priority, and calls waiting in FIFO order. Rename an installation from its dashboard row to tell multiple phones apart. `GET /api/mobile-apps` lists connected apps; `POST /api/mobile-apps/:appId/name` updates its display name; `POST /api/mobile-apps/:appId/priority` moves one up or down; `POST /api/mobile-apps/:appId/block` accepts `{ "blocked": true }` or `{ "blocked": false }`. Blocking leaves the app connected but prevents new calls from being assigned to it; unblocking can dispatch waiting calls. `GET /api/queued-calls` returns the waiting-call snapshot. These management routes are unauthenticated. Preferences persist across reconnects and server instances when Redis is configured.
 
 Socket.IO callers emit `call:start` with a destination `number` and `availabilityPolicy`. If queued, the caller receives `call:queued`; when an app is assigned, it receives `call:outgoing`, and the app receives `call:incoming` with the same simulated number. The app polls `GET /api/endpoints/:endpointId/incoming` as a recovery path.
 

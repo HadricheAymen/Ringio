@@ -40,8 +40,8 @@ const discoveryDocument = {
       description: 'Participant registration, call lifecycle, and WebRTC signaling. Audio flows directly between WebRTC participants.',
       clientEvents: {
         'participant:register': {
-          payload: { role: 'phone | caller | agent', mediaSource: 'optional string' },
-          effect: 'Registers the socket. A phone receives a private endpointId; callers and agents can place outbound calls.',
+          payload: { role: 'phone | caller | agent', mediaSource: 'optional string', appId: 'stable mobile installation ID', name: 'optional display name', platform: 'android | ios | web' },
+          effect: 'Registers the socket. A phone receives a private endpointId and registers app identity; callers and agents can place outbound calls.',
         },
         'call:start': {
           payload: { number: 'simulated destination number', availabilityPolicy: 'reject | queue (default reject)' },
@@ -62,6 +62,7 @@ const discoveryDocument = {
         'call:incoming': 'Incoming simulated call delivered to a phone.',
         'call:outgoing': 'Call assignment delivered to a socket caller or agent.',
         'call:queued': 'Call is waiting for an available phone.',
+        'queue:changed': 'The waiting-call queue changed; fetch GET /api/queued-calls for the current FIFO snapshot.',
         'call:accepted | call:rejected | call:ended | call:active': 'Call lifecycle updates.',
         'rtc:offer | rtc:answer | rtc:ice': 'Relayed WebRTC signaling.',
         'call:error': 'Structured call-control or signaling error.',
@@ -179,12 +180,58 @@ const openApiDocument = {
         },
       },
     },
+    '/api/mobile-apps': {
+      get: {
+        tags: ['Phones'],
+        operationId: 'listConnectedMobileApps',
+        summary: 'List connected mobile apps in routing priority order',
+        responses: { '200': jsonResponse('Connected mobile app snapshots.', { type: 'array', items: schemaRef('MobileAppSnapshot') }) },
+      },
+    },
+    '/api/mobile-apps/{appId}/priority': {
+      post: {
+        tags: ['Phones'],
+        operationId: 'moveMobileAppPriority',
+        summary: 'Move a mobile app up or down in routing priority',
+        parameters: [{ name: 'appId', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: jsonBody({ type: 'object', required: ['direction'], properties: { direction: { type: 'string', enum: ['up', 'down'] } } }),
+        responses: { '200': jsonResponse('Updated mobile app priority.', { type: 'object' }), '400': errorResponse('BadRequest') },
+      },
+    },
+    '/api/mobile-apps/{appId}/block': {
+      post: {
+        tags: ['Phones'],
+        operationId: 'setMobileAppBlocked',
+        summary: 'Block or allow new calls to a mobile app',
+        parameters: [{ name: 'appId', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: jsonBody({ type: 'object', required: ['blocked'], properties: { blocked: { type: 'boolean' } } }),
+        responses: { '200': jsonResponse('Updated mobile app blocked state.', { type: 'object' }), '400': errorResponse('BadRequest') },
+      },
+    },
+    '/api/mobile-apps/{appId}/name': {
+      post: {
+        tags: ['Phones'],
+        operationId: 'renameMobileApp',
+        summary: 'Set the display name for a mobile app',
+        parameters: [{ name: 'appId', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: jsonBody({ type: 'object', required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 48 } } }),
+        responses: { '200': jsonResponse('Updated mobile app name.', { type: 'object' }), '400': errorResponse('BadRequest') },
+      },
+    },
+    '/api/queued-calls': {
+      get: {
+        tags: ['Calls'],
+        operationId: 'listQueuedCalls',
+        summary: 'List calls waiting for an available mobile app in FIFO order',
+        responses: { '200': jsonResponse('Waiting call snapshots.', { type: 'array', items: schemaRef('QueuedCallSnapshot') }) },
+      },
+    },
     '/api/available-numbers': {
       get: {
         tags: ['Phones'],
         operationId: 'listAvailablePhones',
         summary: 'List available phone capacity',
-        description: 'Returns one `{status: "online"}` entry per idle app. Entries represent available app capacity, not dialable numbers.',
+        description: 'Returns one `{status: "online"}` entry per idle, unblocked app. Entries represent available app capacity, not dialable numbers.',
         responses: {
           '200': jsonResponse('Available endpoint snapshots.', {
             type: 'array',
@@ -198,15 +245,16 @@ const openApiDocument = {
         tags: ['Phones'],
         operationId: 'getCallCapacity',
         summary: 'Check whether a call can launch immediately',
-        description: 'Returns online, idle, and busy mobile-app capacity plus the waiting queue size. canLaunchCall is false while queued calls have priority.',
+        description: 'Returns online, idle, busy, and blocked mobile-app capacity plus the waiting queue size. Blocked apps are not available for new calls.',
         responses: {
           '200': jsonResponse('Current call routing capacity.', {
             type: 'object',
-            required: ['onlineMachines', 'availableMachines', 'busyMachines', 'queuedCalls', 'canLaunchCall'],
+            required: ['onlineMachines', 'availableMachines', 'busyMachines', 'blockedMachines', 'queuedCalls', 'canLaunchCall'],
             properties: {
               onlineMachines: { type: 'integer', minimum: 0 },
               availableMachines: { type: 'integer', minimum: 0 },
               busyMachines: { type: 'integer', minimum: 0 },
+              blockedMachines: { type: 'integer', minimum: 0 },
               queuedCalls: { type: 'integer', minimum: 0 },
               canLaunchCall: { type: 'boolean' },
             },
@@ -470,11 +518,37 @@ const openApiDocument = {
       ApiError: { type: 'object', properties: { error: { type: 'string' }, code: { type: 'string' } } },
       PhoneSnapshot: {
         type: 'object',
-        required: ['status', 'available'],
+        required: ['status', 'available', 'blocked'],
         properties: {
-          status: { type: 'string', enum: ['online', 'busy'] },
+          status: { type: 'string', enum: ['online', 'busy', 'blocked'] },
           available: { type: 'boolean', description: 'Whether this app endpoint can be reserved now.' },
+          blocked: { type: 'boolean' },
           lastSeen: { type: 'string', format: 'date-time' },
+        },
+      },
+      MobileAppSnapshot: {
+        type: 'object',
+        required: ['appId', 'name', 'platform', 'status', 'available', 'blocked', 'priority'],
+        properties: {
+          appId: { type: 'string', description: 'Stable mobile installation ID.' },
+          name: { type: 'string' },
+          platform: { type: 'string', enum: ['android', 'ios', 'web', 'unknown'] },
+          status: { type: 'string', enum: ['online', 'busy', 'blocked'] },
+          available: { type: 'boolean' },
+          blocked: { type: 'boolean' },
+          priority: { type: 'integer', minimum: 1 },
+        },
+      },
+      QueuedCallSnapshot: {
+        type: 'object',
+        required: ['callId', 'number', 'caller', 'queuedAt', 'waitSeconds'],
+        properties: {
+          callId: { type: 'string', format: 'uuid' },
+          number: { type: 'string' },
+          caller: { type: 'string' },
+          mediaSource: { type: 'string' },
+          queuedAt: { type: 'string', format: 'date-time' },
+          waitSeconds: { type: 'integer', minimum: 0 },
         },
       },
       IncomingCall: {
@@ -581,6 +655,11 @@ const publishedOperations = {
   '/api/openapi.json': ['get'],
   '/api/ice-config': ['get'],
   '/api/numbers': ['get'],
+  '/api/mobile-apps': ['get'],
+  '/api/mobile-apps/{appId}/priority': ['post'],
+  '/api/mobile-apps/{appId}/block': ['post'],
+  '/api/mobile-apps/{appId}/name': ['post'],
+  '/api/queued-calls': ['get'],
   '/api/available-numbers': ['get'],
   '/api/capacity': ['get'],
   '/api/calls': ['post'],

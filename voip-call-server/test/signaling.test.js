@@ -71,6 +71,9 @@ test('publishes API discovery and OpenAPI contract without shared-state configur
     assert.equal(specification.openapi, '3.1.0');
     assert.ok(specification.paths['/api/calls'].post);
     assert.ok(specification.paths['/api/capacity'].get);
+    assert.ok(specification.paths['/api/queued-calls'].get);
+    assert.ok(specification.paths['/api/mobile-apps/{appId}/block'].post);
+    assert.ok(specification.paths['/api/mobile-apps/{appId}/name'].post);
     assert.equal(specification.paths['/api/calls'].get, undefined);
     assert.equal(specification.components.schemas.CreateCallRequest.properties.availabilityPolicy.default, 'reject');
     for (const path of [
@@ -95,6 +98,12 @@ test('publishes API discovery and OpenAPI contract without shared-state configur
     });
     assert.equal(preflight.status, 204);
     assert.match(preflight.headers.get('access-control-allow-headers'), /Authorization/i);
+
+    const dashboard = await fetch(`${url}/`).then((response) => response.text());
+    assert.match(dashboard, /Waiting calls/);
+    assert.match(dashboard, /Mobile apps/);
+    assert.doesNotMatch(dashboard, /Call the phone/);
+    assert.doesNotMatch(dashboard, /destinationNumber/);
 
     const operationalRoute = await fetch(`${url}/api/numbers`);
     assert.equal(operationalRoute.status, 503);
@@ -144,6 +153,7 @@ test('phone endpoint accepts a caller and relays WebRTC signaling for a simulate
       onlineMachines: 1,
       availableMachines: 1,
       busyMachines: 0,
+      blockedMachines: 0,
       queuedCalls: 0,
       canLaunchCall: true,
     });
@@ -173,6 +183,7 @@ test('phone endpoint accepts a caller and relays WebRTC signaling for a simulate
       onlineMachines: 1,
       availableMachines: 0,
       busyMachines: 1,
+      blockedMachines: 0,
       queuedCalls: 0,
       canLaunchCall: false,
     });
@@ -353,6 +364,7 @@ test('caller can reject or queue when all mobile apps are busy', { timeout: 1500
       onlineMachines: 2,
       availableMachines: 0,
       busyMachines: 2,
+      blockedMachines: 0,
       queuedCalls: 1,
       canLaunchCall: false,
     });
@@ -418,7 +430,7 @@ test('phone and caller can reconnect to active call via call:reconnect without c
     let callRecord = await fetch(`${url}/api/calls/${callId}`).then((r) => r.json());
     assert.equal(callRecord.status, 'active');
 
-    // Simulate caller socket dropping (e.g. Vercel maxDuration 60s timeout)
+    // Simulate caller socket dropping (e.g. Vercel maxDuration timeout)
     caller.disconnect();
     await new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -563,9 +575,9 @@ test('REST API exposes number inventory, available targets, and recording metada
     const transcriptResponse = await fetch(transcriptPath, { headers: agentHeaders });
     assert.equal(transcriptResponse.status, 200);
     const transcripts = await transcriptResponse.json();
-    assert.deepEqual(transcripts.map(({ speaker, sequence }) => ({ speaker, sequence })), [
-      { speaker: 'agent', sequence: 1 },
-      { speaker: 'mobile', sequence: 2 },
+    assert.deepEqual(transcripts.map(({ speaker, sequence, provider }) => ({ speaker, sequence, provider })), [
+      { speaker: 'agent', sequence: 1, provider: 'gemini-3.8-live' },
+      { speaker: 'mobile', sequence: 2, provider: 'gemini-3.8-live' },
     ]);
 
     const assetsPath = `${url}/api/calls/${createdCall.callId}/assets`;
@@ -744,5 +756,146 @@ test('Vercel shares live call signaling and recording metadata through Redis', {
   } finally {
     phone.disconnect();
     caller.disconnect();
+  }
+});
+
+test('mobile app priority controls inventory order and call assignment', { timeout: 15000 }, async () => {
+  const port = await getFreePort();
+  const url = `http://127.0.0.1:${port}`;
+  const child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
+    env: { ...process.env, HOST: '127.0.0.1', PORT: String(port) },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  const clients = [];
+
+  try {
+    let firstPhone;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        firstPhone = await connectClient(url);
+        clients.push(firstPhone);
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    const secondPhone = await connectClient(url);
+    clients.push(secondPhone);
+
+    const registerPhone = (socket, appId, name) => {
+      const registered = waitFor(socket, 'participant:registered');
+      socket.emit('participant:register', { role: 'phone', appId, name, platform: 'android' });
+      return registered;
+    };
+    await registerPhone(firstPhone, 'app-installation-1', 'Kitchen phone');
+    await registerPhone(secondPhone, 'app-installation-2', 'Office phone');
+
+    const moveResponse = await fetch(`${url}/api/mobile-apps/app-installation-2/priority`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ direction: 'up' }),
+    });
+    assert.equal(moveResponse.status, 200);
+
+    const apps = await fetch(`${url}/api/mobile-apps`).then((response) => response.json());
+    assert.deepEqual(apps.map(({ appId, name }) => ({ appId, name })), [
+      { appId: 'app-installation-2', name: 'Office phone' },
+      { appId: 'app-installation-1', name: 'Kitchen phone' },
+    ]);
+
+    const caller = await connectClient(url);
+    clients.push(caller);
+    const callerRegistered = waitFor(caller, 'participant:registered');
+    caller.emit('participant:register', { role: 'caller', mediaSource: 'human-pc' });
+    await callerRegistered;
+
+    let firstPhoneIncoming = false;
+    firstPhone.on('call:incoming', () => { firstPhoneIncoming = true; });
+    const preferredPhoneIncoming = waitFor(secondPhone, 'call:incoming');
+    caller.emit('call:start', { number: '+15550001111' });
+    await preferredPhoneIncoming;
+    assert.equal(firstPhoneIncoming, false);
+  } finally {
+    clients.forEach((client) => client.disconnect());
+    child.kill();
+    await Promise.race([once(child, 'exit'), new Promise((resolve) => setTimeout(resolve, 2000))]);
+  }
+});
+
+test('blocked mobile apps stay visible and receive queued calls after being allowed', { timeout: 15000 }, async () => {
+  const port = await getFreePort();
+  const url = `http://127.0.0.1:${port}`;
+  const child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
+    env: { ...process.env, HOST: '127.0.0.1', PORT: String(port) },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  const clients = [];
+
+  try {
+    let phone;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        phone = await connectClient(url);
+        clients.push(phone);
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    const registration = waitFor(phone, 'participant:registered');
+    phone.emit('participant:register', {
+      role: 'phone',
+      appId: 'blocked-app-installation',
+      name: 'Kitchen phone',
+      platform: 'android',
+    });
+    await registration;
+
+    const blockResponse = await fetch(`${url}/api/mobile-apps/blocked-app-installation/block`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ blocked: true }),
+    });
+    assert.equal(blockResponse.status, 200);
+
+    const createResponse = await fetch(`${url}/api/calls`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: { number: '+15550002222' }, availabilityPolicy: 'queue' }),
+    });
+    assert.equal(createResponse.status, 201);
+    const queuedCall = await createResponse.json();
+    assert.equal(queuedCall.status, 'queued');
+
+    const [apps, queue] = await Promise.all([
+      fetch(`${url}/api/mobile-apps`).then((response) => response.json()),
+      fetch(`${url}/api/queued-calls`).then((response) => response.json()),
+    ]);
+    assert.equal(apps.length, 1);
+    assert.equal(apps[0].available, false);
+    assert.equal(apps[0].blocked, true);
+    assert.deepEqual(queue.map(({ callId }) => callId), [queuedCall.callId]);
+    assert.deepEqual(await fetch(`${url}/api/capacity`).then((response) => response.json()), {
+      onlineMachines: 1,
+      availableMachines: 0,
+      busyMachines: 0,
+      blockedMachines: 1,
+      queuedCalls: 1,
+      canLaunchCall: false,
+    });
+
+    const incoming = waitFor(phone, 'call:incoming');
+    const allowResponse = await fetch(`${url}/api/mobile-apps/blocked-app-installation/block`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ blocked: false }),
+    });
+    assert.equal(allowResponse.status, 200);
+    assert.equal((await incoming)[0].callId, queuedCall.callId);
+    assert.deepEqual(await fetch(`${url}/api/queued-calls`).then((response) => response.json()), []);
+  } finally {
+    clients.forEach((client) => client.disconnect());
+    child.kill();
+    await Promise.race([once(child, 'exit'), new Promise((resolve) => setTimeout(resolve, 2000))]);
   }
 });
