@@ -19,6 +19,7 @@
     "start:local": "node scripts/start-local.js",
     "start:vercel": "cross-env EXPO_PUBLIC_CALL_SERVER_URL=https://voip-ringio-prototype.vercel.app expo start --dev-client --clear --lan",
     "dev": "expo start --dev-client --clear",
+    "android:vercel:prod": "cross-env EXPO_PUBLIC_CALL_SERVER_URL=https://voip-ringio-prototype.vercel.app expo run:android --variant release",
     "android": "expo run:android",
     "android:dev": "expo run:android --device-id 192.168.100.3:40163",
     "ios": "expo run:ios",

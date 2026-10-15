@@ -87,7 +87,9 @@ class GeminiLiveSession {
           for (const callback of callbacks) callback({ type: 'error', error });
         },
         onclose: (event) => {
-          const error = new Error(`Gemini Live session closed (${event.code || 'unknown'}).`);
+          const reason = typeof event.reason === 'string' ? event.reason.trim() : '';
+          const detail = reason ? `: ${reason}` : '';
+          const error = new Error(`Gemini Live session closed (${event.code || 'unknown'})${detail}.`);
           if (!settled) {
             settled = true;
             rejectSetup(error);

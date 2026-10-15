@@ -74,3 +74,19 @@ test('connects to Gemini Live, greets first, streams PCM, and closes', async () 
 test('requires an API key unless a client adapter is injected', async () => {
   await assert.rejects(GeminiLiveSession.connect({ apiKey: '' }), /GEMINI_API_KEY is required/);
 });
+
+test('includes the provider close reason when Gemini rejects a Live session', async () => {
+  const client = {
+    live: {
+      connect: async ({ callbacks }) => {
+        queueMicrotask(() => callbacks.onclose({ code: 1008, reason: 'policy violation' }));
+        return { close() {} };
+      },
+    },
+  };
+
+  await assert.rejects(
+    GeminiLiveSession.connect({ client }),
+    /Gemini Live session closed \(1008\): policy violation\./,
+  );
+});
