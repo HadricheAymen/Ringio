@@ -5,6 +5,9 @@ const { CallArtifactClient } = require('./callArtifactClient');
 const { GeminiLiveSession } = require('./geminiLiveSession');
 const { VoiceCallAgent } = require('./voiceCallAgent');
 const { OrdelyCallbackClient } = require('./ordelyCallbackClient');
+const { int16ToBuffer, resamplePcm16 } = require('./audioPcm');
+
+const MONITOR_SAMPLE_RATE = 24000;
 
 async function getIceServers(serverUrl) {
   const response = await fetch(`${serverUrl.replace(/\/$/, '')}/api/ice-config`);
@@ -39,6 +42,15 @@ async function main() {
     geminiFactory: () => GeminiLiveSession.connect(),
     artifactStore: new AudioArtifactStore(),
     artifactClient: new CallArtifactClient({ serverUrl }),
+    onMonitorAudio: (samples, sampleRate) => {
+      const monitorPcm = resamplePcm16(samples, sampleRate, MONITOR_SAMPLE_RATE);
+      if (!monitorPcm.length) return;
+      process.send?.({
+        type: 'monitor-audio',
+        sampleRate: MONITOR_SAMPLE_RATE,
+        pcmBase64: int16ToBuffer(monitorPcm).toString('base64'),
+      });
+    },
     onStatus: (phase) => process.send?.({ type: 'agent-status', phase }),
     taskId,
     ordelyClient,

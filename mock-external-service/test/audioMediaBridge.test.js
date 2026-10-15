@@ -61,6 +61,28 @@ test('queues Gemini audio into 10ms WebRTC source frames and can interrupt playb
   await bridge.close();
 });
 
+test('copies generated Gemini audio to the monitor without forwarding phone microphone audio', async () => {
+  const { peerConnection, wrtc, sinks } = createFakeWebRtc();
+  const monitored = [];
+  const phoneAudio = [];
+  const bridge = new AudioMediaBridge({
+    peerConnection,
+    wrtc,
+    callId: '12345678-abcd-1234-abcd-123456789abc',
+    onMonitorAudio: (samples, sampleRate) => monitored.push({ samples: [...samples], sampleRate }),
+    onMobileAudio: (samples) => phoneAudio.push([...samples]),
+    outputBufferMs: 0,
+  });
+
+  peerConnection.ontrack({ track: { kind: 'audio' } });
+  sinks[0].ondata({ samples: new Int16Array([11, 22]), sampleRate: 24000, channelCount: 1 });
+  bridge.enqueueGeminiAudio(new Int16Array([101, 202, 303]), 24000);
+
+  assert.deepEqual(monitored, [{ samples: [101, 202, 303], sampleRate: 24000 }]);
+  assert.deepEqual(phoneAudio, [[11]]);
+  await bridge.close();
+});
+
 test('keeps WebRTC frame cadence from accumulating audio-source processing time', async () => {
   const { peerConnection, wrtc, audioFrames } = createFakeWebRtc();
   let now = 0;

@@ -163,6 +163,8 @@
             </div>
             <div class="voice-test">
               <button class="test-audio" id="voiceTestButton" type="button">Test voice on PC</button>
+              <button class="test-audio" id="monitorButton" type="button" disabled>Play agent on room PA</button>
+              <span id="monitorStatus" role="status">Available during a call</span>
               <audio class="voice-player" id="voiceTestPlayer" controls hidden aria-label="Gemini PC voice test playback"></audio>
             </div>
             <div class="notice" id="notice" role="alert"></div>
@@ -208,11 +210,15 @@
       const stopButton = document.getElementById('stopButton');
       const voiceTestButton = document.getElementById('voiceTestButton');
       const voiceTestPlayer = document.getElementById('voiceTestPlayer');
+      const monitorButton = document.getElementById('monitorButton');
+      const monitorStatus = document.getElementById('monitorStatus');
       let serverMode = 'local';
       let currentPhase = 'idle';
       let currentRunning = false;
       let voiceTestRunning = false;
       let voiceTestUrl = null;
+      let monitorAbortController = null;
+      let monitorAudioContext = null;
 
       async function api(path, options = {}) {
         const response = await fetch(path, {
@@ -258,6 +264,9 @@
         startButton.disabled = currentRunning || voiceTestRunning || ACTIVE_PHASES.has(currentPhase);
         stopButton.disabled = !currentRunning;
         voiceTestButton.disabled = currentRunning || voiceTestRunning;
+        monitorButton.disabled = !currentRunning && !monitorAbortController;
+        monitorButton.textContent = monitorAbortController ? 'Stop room audio' : 'Play agent on room PA';
+        if (!currentRunning && monitorAbortController) stopRoomAudio();
         modeButtons.forEach((button) => {
           button.setAttribute('aria-pressed', String(button.dataset.mode === serverMode));
           button.disabled = currentRunning;
@@ -322,6 +331,85 @@
           stopButton.disabled = false;
         }
       });
+
+      function stopRoomAudio() {
+        monitorAbortController?.abort();
+        monitorAudioContext?.close().catch(() => {});
+        monitorAbortController = null;
+        monitorAudioContext = null;
+        monitorStatus.textContent = 'Room audio stopped';
+        monitorButton.disabled = !currentRunning;
+        monitorButton.textContent = 'Play agent on room PA';
+      }
+
+      async function startRoomAudio() {
+        const controller = new AbortController();
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass) throw new Error('This browser does not support live audio playback.');
+        const context = new AudioContextClass();
+        monitorAbortController = controller;
+        monitorAudioContext = context;
+        await context.resume();
+        monitorButton.textContent = 'Stop room audio';
+        monitorStatus.textContent = 'Connecting room audio…';
+
+        try {
+          const response = await fetch('/api/agent/monitor', { signal: controller.signal });
+          if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || `Room audio failed (${response.status}).`);
+          }
+          if (!response.body?.getReader) throw new Error('Streaming audio is not supported by this browser.');
+          monitorStatus.textContent = 'Gemini audio is playing through this PC';
+
+          const reader = response.body.getReader();
+          const sampleRate = Number(response.headers.get('X-Audio-Sample-Rate')) || 24000;
+          let remainder = new Uint8Array(0);
+          let nextStart = context.currentTime + 0.12;
+          while (!controller.signal.aborted) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const bytes = new Uint8Array(remainder.length + value.length);
+            bytes.set(remainder);
+            bytes.set(value, remainder.length);
+            const usableLength = bytes.length - bytes.length % 2;
+            remainder = bytes.slice(usableLength);
+            if (!usableLength) continue;
+
+            const sampleCount = usableLength / 2;
+            const audio = context.createBuffer(1, sampleCount, sampleRate);
+            const channel = audio.getChannelData(0);
+            const view = new DataView(bytes.buffer, bytes.byteOffset, usableLength);
+            for (let index = 0; index < sampleCount; index += 1) {
+              const sample = view.getInt16(index * 2, true);
+              channel[index] = sample < 0 ? sample / 32768 : sample / 32767;
+            }
+            const source = context.createBufferSource();
+            source.buffer = audio;
+            source.connect(context.destination);
+            nextStart = Math.max(nextStart, context.currentTime + 0.03);
+            source.start(nextStart);
+            nextStart += audio.duration;
+          }
+          if (!controller.signal.aborted) monitorStatus.textContent = 'Call ended';
+        } catch (error) {
+          if (error.name !== 'AbortError') monitorStatus.textContent = error.message;
+        } finally {
+          if (monitorAbortController === controller) {
+            monitorAbortController = null;
+            monitorAudioContext = null;
+            await context.close().catch(() => {});
+            monitorButton.disabled = !currentRunning;
+            monitorButton.textContent = 'Play agent on room PA';
+          }
+        }
+      }
+
+      monitorButton.addEventListener('click', () => {
+        if (monitorAbortController) stopRoomAudio();
+        else startRoomAudio().catch((error) => { monitorStatus.textContent = error.message; });
+      });
+      window.addEventListener('beforeunload', stopRoomAudio);
 
       voiceTestButton.addEventListener('click', async () => {
         notice.textContent = 'Generating a short Gemini voice test…';

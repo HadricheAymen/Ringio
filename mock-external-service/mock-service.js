@@ -22,6 +22,7 @@ const agentState = {
 };
 let agentProcess = null;
 let voiceTestRunning = false;
+const monitorClients = new Set();
 const files = new Map([
   ['/', ['call-console.html', 'text/html; charset=utf-8']],
   ['/call-console.html', ['call-console.html', 'text/html; charset=utf-8']],
@@ -38,6 +39,40 @@ function sendJson(response, statusCode, value) {
 function appendLog(message) {
   agentState.logs.push({ at: new Date().toISOString(), message });
   if (agentState.logs.length > MAX_LOG_ENTRIES) agentState.logs.shift();
+}
+
+function closeMonitorClients() {
+  for (const response of monitorClients) response.end();
+  monitorClients.clear();
+}
+
+function handleAgentMessage(event) {
+  if (event?.type === 'agent-status' && typeof event.phase === 'string') {
+    agentState.phase = event.phase;
+    return;
+  }
+  if (event?.type !== 'monitor-audio' || event.sampleRate !== 24000 || typeof event.pcmBase64 !== 'string') return;
+  const pcm = Buffer.from(event.pcmBase64, 'base64');
+  if (!pcm.length || pcm.length % 2 !== 0) return;
+  for (const response of monitorClients) {
+    if (response.destroyed || response.writableEnded) monitorClients.delete(response);
+    else response.write(pcm);
+  }
+}
+
+function attachMonitorStream(request, response) {
+  if (!agentProcess || agentProcess.exitCode !== null) {
+    return sendJson(response, 409, { error: 'Start a call before playing room audio.' });
+  }
+  response.writeHead(200, {
+    'Content-Type': 'application/octet-stream',
+    'X-Audio-Sample-Rate': '24000',
+    'Cache-Control': 'no-store, no-transform',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  response.flushHeaders?.();
+  monitorClients.add(response);
+  response.on('close', () => monitorClients.delete(response));
 }
 
 function attachOutput(stream) {
@@ -88,6 +123,7 @@ function startAgent({ serverMode, targetNumber, availabilityPolicy }) {
   agentState.serverUrl = serverMode === 'vercel' ? VERCEL_CALL_SERVER_URL : null;
   agentState.startedAt = new Date().toISOString();
   agentState.logs = [];
+  closeMonitorClients();
 
   const launch = async () => {
     if (serverMode === 'local') agentState.serverUrl = `http://${await getLanAddress()}:4100`;
@@ -107,17 +143,15 @@ function startAgent({ serverMode, targetNumber, availabilityPolicy }) {
     agentProcess = child;
     attachOutput(child.stdout);
     attachOutput(child.stderr);
-    child.on('message', (event) => {
-      if (event?.type === 'agent-status' && typeof event.phase === 'string') {
-        agentState.phase = event.phase;
-      }
-    });
+    child.on('message', handleAgentMessage);
     child.on('error', (error) => {
       agentState.phase = 'error';
+      closeMonitorClients();
       appendLog(`Could not start the agent: ${error.message}`);
       if (agentProcess === child) agentProcess = null;
     });
     child.on('close', (code) => {
+      closeMonitorClients();
       if (!['error', 'rejected'].includes(agentState.phase)) agentState.phase = code === 0 ? 'ended' : 'error';
       appendLog(`Agent process exited with code ${code}.`);
       if (agentProcess === child) agentProcess = null;
@@ -151,6 +185,7 @@ function startTaskAgent(task) {
   agentState.serverUrl = process.env.CALL_SERVER_URL || null;
   agentState.startedAt = new Date().toISOString();
   agentState.logs = [];
+  closeMonitorClients();
   agentState.currentTaskId = task.taskId;
 
   const launch = async () => {
@@ -175,17 +210,15 @@ function startTaskAgent(task) {
     agentProcess = child;
     attachOutput(child.stdout);
     attachOutput(child.stderr);
-    child.on('message', (event) => {
-      if (event?.type === 'agent-status' && typeof event.phase === 'string') {
-        agentState.phase = event.phase;
-      }
-    });
+    child.on('message', handleAgentMessage);
     child.on('error', (error) => {
       agentState.phase = 'error';
+      closeMonitorClients();
       appendLog(`Could not start the agent: ${error.message}`);
       if (agentProcess === child) agentProcess = null;
     });
     child.on('close', (code) => {
+      closeMonitorClients();
       if (!['error', 'rejected'].includes(agentState.phase)) agentState.phase = code === 0 ? 'ended' : 'error';
       appendLog(`Agent process exited with code ${code}.`);
       if (agentProcess === child) agentProcess = null;
@@ -244,6 +277,10 @@ async function handleApi(request, response, pathname) {
       running: !!agentProcess && agentProcess.exitCode === null,
       voiceTestRunning,
     });
+  }
+
+  if (request.method === 'GET' && pathname === '/api/agent/monitor') {
+    return attachMonitorStream(request, response);
   }
 
   if (request.method === 'POST' && pathname === '/api/agent/voice-test') {

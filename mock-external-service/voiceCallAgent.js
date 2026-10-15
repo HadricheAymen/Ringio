@@ -11,6 +11,7 @@ class VoiceCallAgent {
     geminiFactory,
     artifactStore,
     artifactClient,
+    onMonitorAudio = () => {},
     mediaBridgeFactory = (options) => new AudioMediaBridge(options),
     logger = console,
     onStatus = () => {},
@@ -29,6 +30,7 @@ class VoiceCallAgent {
     this.geminiFactory = geminiFactory;
     this.artifactStore = artifactStore;
     this.artifactClient = artifactClient;
+    this.onMonitorAudio = onMonitorAudio;
     this.mediaBridgeFactory = mediaBridgeFactory;
     this.logger = logger;
     this.onStatus = (phase) => {
@@ -155,6 +157,7 @@ class VoiceCallAgent {
       onMobileAudio: (samples) => {
         if (this.greetingComplete && this.gemini && !this.closing) this.gemini.sendAudio(samples, 16000);
       },
+      onMonitorAudio: (samples, sampleRate) => this.onMonitorAudio(samples, sampleRate),
       onError: (error) => this.logger.error('Media artifact write failed:', error.message),
       onAudioMetrics: (metrics) => this.logger.info('Audio bridge metrics:', JSON.stringify(metrics)),
     });

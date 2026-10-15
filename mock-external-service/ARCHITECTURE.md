@@ -52,6 +52,7 @@ flowchart LR
 ## Entry points and checks
 
 - Console: `npm start`, then open `http://127.0.0.1:4200`.
+- Same-room playback: during a call, select **Play agent on room PA** in the local console and connect the console PC's audio output to the room PA. This monitors Gemini output only; mobile microphone audio remains on the call input path.
 - Headless local agent: `npm run start:agent:local`.
 - Headless Vercel agent: `npm run start:agent:vercel`.
 - Tests: `npm test`; fake-provider coverage keeps the lifecycle and audio path testable without a live Gemini session.

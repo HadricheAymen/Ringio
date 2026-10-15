@@ -48,6 +48,7 @@ test('completes a simulated mobile call with Gemini greeting first and two-way a
   let geminiListener;
   let introductionCount = 0;
   const sentAudio = [];
+  const monitoredAudio = [];
   const playedAudio = [];
   const transcripts = [];
   const lifecycle = [];
@@ -120,6 +121,7 @@ test('completes a simulated mobile call with Gemini greeting first and two-way a
         lifecycle.push(['assets-saved', id, assets]);
       },
     },
+    onMonitorAudio: (samples, sampleRate) => monitoredAudio.push({ samples: [...samples], sampleRate }),
     onStatus: (phase) => statuses.push(phase),
     mediaBridgeFactory: (options) => {
       bridgeOptions = options;
@@ -170,6 +172,8 @@ test('completes a simulated mobile call with Gemini greeting first and two-way a
   geminiListener({ type: 'turn-complete' });
   for (let attempt = 0; attempt < 20 && !agent.greetingComplete; attempt += 1) await new Promise(setImmediate);
   assert.equal(agent.greetingComplete, true);
+  bridgeOptions.onMonitorAudio(new Int16Array([5, 6]), 24000);
+  assert.deepEqual(monitoredAudio, [{ samples: [5, 6], sampleRate: 24000 }]);
 
   bridgeOptions.onMobileAudio(new Int16Array([3, 4]));
   assert.equal(sentAudio.length, 1);
